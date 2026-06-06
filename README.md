@@ -10,7 +10,7 @@
 
 ---
 
-## 🗂️ What's Implemented
+##  What's Implemented
 
 This repository implements **all models and architectures** described in the paper:
 
@@ -54,7 +54,7 @@ This repository implements **all models and architectures** described in the pap
 
 ---
 
-## 🏗️ Project Structure
+##  Project Structure
 
 ```
 agentic-rag-implementations/
@@ -93,7 +93,7 @@ agentic-rag-implementations/
 
 ---
 
-## ⚡ Quick Start
+##  Quick Start
 
 ### 1. Install Dependencies
 
@@ -155,7 +155,7 @@ print(f"Relevance scores: {result['relevance_scores']}")
 
 ---
 
-## 📊 Running the Benchmark
+##  Running the Benchmark
 
 ```bash
 python evaluation/benchmark.py
@@ -178,7 +178,7 @@ This runs all 11 RAG architectures on 20 shared queries and prints a comparison 
 
 ---
 
-## 🧪 Testing
+##  Testing
 
 ```bash
 # Run all tests
@@ -193,7 +193,7 @@ pytest tests/test_core.py -v
 
 ---
 
-## 🔧 Configuration
+##  Configuration
 
 Control the LLM model via environment variable:
 
@@ -210,29 +210,29 @@ export MODEL_NAME="google/flan-t5-xl"
 
 ---
 
-## 🏛️ Architecture Descriptions
+## Architecture Descriptions
 
-### Naïve RAG (§2.3.1)
+### Naïve RAG (2.3.1)
 The simplest form: embed query → FAISS top-k → concatenate context → generate answer. No optimization.
 
-### Advanced RAG (§2.3.2)
+### Advanced RAG (2.3.2)
 Adds pre-retrieval (HyDE, query rewriting) and post-retrieval (reranking, context compression) optimizations.
 
-### Corrective RAG / CRAG (§5.4)
+### Corrective RAG / CRAG (5.4)
 5-agent pipeline: Context Retrieval → Relevance Evaluation → Query Refinement → External Knowledge → Response Synthesis. Iteratively corrects low-quality retrievals.
 
-### Adaptive RAG (§5.5)
+### Adaptive RAG (5.5)
 Complexity classifier routes queries to: no-retrieval path (factoid), single-step path (simple), or multi-step iterative path (complex).
 
-### Agent-G (§5.6.1)
+### Agent-G (5.6.1)
 Retriever Bank (graph + text agents) + Critic Module + feedback loops. Dynamically combines structured graph knowledge with unstructured documents.
 
-### GeAR (§5.6.2)
+### GeAR (5.6.2)
 BM25 base retrieval enhanced with graph expansion (BFS traversal) for multi-hop reasoning. Agent decides when to stop expanding.
 
 ---
 
-## 📖 Citation
+##  Citation
 
 If you use this code, please cite the original survey paper:
 
@@ -247,6 +247,6 @@ If you use this code, please cite the original survey paper:
 
 ---
 
-## 📄 License
+##  License
 
 MIT License — see [LICENSE](LICENSE) for details.
