@@ -472,6 +472,11 @@ class KnowledgeGraph:
     # ------------------------------------------------------------------
 
     @property
+    def graph(self) -> "nx.DiGraph":
+        """Public read-only alias for the underlying NetworkX DiGraph."""
+        return self._graph
+
+    @property
     def num_entities(self) -> int:
         """Return the number of entity nodes in the graph."""
         return self._graph.number_of_nodes()

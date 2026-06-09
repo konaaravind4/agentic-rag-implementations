@@ -5,8 +5,10 @@ Local LLM wrapper for the Agentic RAG pipeline.
 
 Supports encoder-decoder models (e.g. ``google/flan-t5-base``) and
 causal / decoder-only models (e.g. ``gpt2``, ``EleutherAI/gpt-neo-*``).
-The correct HuggingFace ``pipeline`` task type is chosen automatically based
-on the model's architecture.
+The architecture is detected automatically; seq2seq models are loaded via
+``AutoModelForSeq2SeqLM`` + ``AutoTokenizer`` (the ``text2text-generation``
+pipeline task was removed in newer transformers releases), while causal
+models continue to use the ``text-generation`` pipeline.
 
 All inference runs locally on CPU (or GPU if available); no API keys or
 network calls are required after the model is downloaded.
@@ -24,8 +26,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# HuggingFace pipeline task labels
-_SEQ2SEQ_TASK = "text2text-generation"
+# Causal pipeline task (still supported in all transformers versions)
 _CAUSAL_TASK = "text-generation"
 
 # Model families that use seq2seq (encoder-decoder) architectures
@@ -40,21 +41,10 @@ _SEQ2SEQ_PREFIXES = (
 )
 
 
-def _infer_task(model_name: str) -> str:
-    """
-    Heuristically determine the HuggingFace pipeline task for a model.
-
-    Args:
-        model_name (str): HuggingFace model identifier or local path.
-
-    Returns:
-        str: Either ``'text2text-generation'`` or ``'text-generation'``.
-    """
+def _is_seq2seq(model_name: str) -> bool:
+    """Return True if the model identifier looks like a seq2seq architecture."""
     lower = model_name.lower()
-    for prefix in _SEQ2SEQ_PREFIXES:
-        if prefix in lower:
-            return _SEQ2SEQ_TASK
-    return _CAUSAL_TASK
+    return any(prefix in lower for prefix in _SEQ2SEQ_PREFIXES)
 
 
 class LocalLLM:
@@ -70,8 +60,10 @@ class LocalLLM:
     Attributes:
         model_name (str): HuggingFace model identifier.
         device (str): Target device for inference (``'cpu'`` or ``'cuda'``).
-        task (str): Inferred HuggingFace pipeline task.
-        _pipeline: The loaded HuggingFace pipeline (``None`` until first use).
+        _seq2seq (bool): True when the model is an encoder-decoder.
+        _model: Loaded model object (None until first use).
+        _tokenizer: Loaded tokenizer (None until first use).
+        _pipeline: Loaded causal pipeline (None until first use, seq2seq=False only).
 
     Example:
         >>> llm = LocalLLM()
@@ -97,8 +89,10 @@ class LocalLLM:
         """
         self.model_name: str = model_name
         self.device: str = device
-        self.task: str = _infer_task(model_name)
-        self._pipeline: Optional[object] = None  # loaded lazily
+        self._seq2seq: bool = _is_seq2seq(model_name)
+        self._model = None       # AutoModelForSeq2SeqLM  (seq2seq only)
+        self._tokenizer = None   # AutoTokenizer          (seq2seq only)
+        self._pipeline = None    # text-generation pipeline (causal only)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -106,17 +100,44 @@ class LocalLLM:
 
     def _load_pipeline(self) -> None:
         """
-        Load the HuggingFace pipeline into memory if not yet loaded.
+        Load the model into memory if not yet loaded.
+
+        For seq2seq models: loads ``AutoTokenizer`` + ``AutoModelForSeq2SeqLM``.
+        For causal models:  loads a HuggingFace ``text-generation`` pipeline.
 
         This method is idempotent; multiple calls are safe.
-
-        Raises:
-            ImportError: If ``transformers`` or ``torch`` are not installed.
-            OSError: If the model cannot be downloaded or found locally.
         """
-        if self._pipeline is not None:
-            return
+        if self._seq2seq:
+            if self._model is not None:
+                return
+            self._load_seq2seq()
+        else:
+            if self._pipeline is not None:
+                return
+            self._load_causal()
 
+    def _load_seq2seq(self) -> None:
+        """Load AutoTokenizer + AutoModelForSeq2SeqLM for encoder-decoder models."""
+        try:
+            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM  # type: ignore
+        except ImportError as exc:
+            raise ImportError(
+                "transformers and torch are required. "
+                "Install with: pip install transformers torch"
+            ) from exc
+
+        logger.info("Loading seq2seq model '%s' …", self.model_name)
+        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self._model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+
+        if self.device != "cpu":
+            self._model = self._model.to(self.device)
+
+        self._model.eval()
+        logger.info("Seq2seq model loaded successfully.")
+
+    def _load_causal(self) -> None:
+        """Load a text-generation pipeline for decoder-only models."""
         try:
             from transformers import pipeline  # type: ignore
         except ImportError as exc:
@@ -125,65 +146,32 @@ class LocalLLM:
                 "Install it with: pip install transformers"
             ) from exc
 
-        logger.info(
-            "Loading model '%s' with task '%s' on device '%s' …",
-            self.model_name,
-            self.task,
-            self.device,
-        )
-
-        # Determine the integer device index for HuggingFace pipeline
-        # pipeline(device=...) accepts -1 for CPU, ≥0 for GPU
-        if self.device == "cpu":
-            device_id = -1
-        elif self.device.startswith("cuda"):
+        device_id = -1
+        if self.device.startswith("cuda"):
             parts = self.device.split(":")
             device_id = int(parts[1]) if len(parts) > 1 else 0
-        else:
-            device_id = -1
 
+        logger.info(
+            "Loading causal model '%s' on device=%d …", self.model_name, device_id
+        )
         self._pipeline = pipeline(
-            task=self.task,
+            task=_CAUSAL_TASK,
             model=self.model_name,
             device=device_id,
         )
-        logger.info("Model loaded successfully.")
+        logger.info("Causal model loaded successfully.")
 
     @staticmethod
-    def _extract_text(output: list[dict]) -> str:
-        """
-        Pull the generated text string out of a HuggingFace pipeline output.
-
-        Handles both seq2seq (``'generated_text'``) and causal
-        (``'generated_text'``) keys, which differ only in whether the
-        prompt is included in the output.
-
-        Args:
-            output (list[dict]): Raw pipeline output.
-
-        Returns:
-            str: The generated text, stripped of leading/trailing whitespace.
-        """
+    def _extract_text(output) -> str:
+        """Extract generated text string from a HuggingFace pipeline output."""
         if not output:
             return ""
-        first = output[0]
+        first = output[0] if isinstance(output, list) else output
         text = first.get("generated_text", "")
         return text.strip()
 
     def _build_relevance_prompt(self, query: str, document: str) -> str:
-        """
-        Build an instruction prompt that asks the model to judge relevance.
-
-        The model is asked to output a single floating-point number between
-        0 and 1, which is then parsed in :meth:`score_relevance`.
-
-        Args:
-            query (str): The user query.
-            document (str): The candidate document text (may be truncated).
-
-        Returns:
-            str: The formatted prompt string.
-        """
+        """Build an instruction prompt that asks the model to judge relevance."""
         # Truncate document to avoid exceeding model context window
         max_doc_chars = 512
         truncated_doc = document[:max_doc_chars]
@@ -211,21 +199,14 @@ class LocalLLM:
         """
         Generate a text response for the given prompt.
 
-        For seq2seq models (flan-t5 etc.) the prompt is treated as the
-        source sequence; the model produces a target sequence.  For causal
-        models the prompt is prepended to the generated continuation.
+        For seq2seq models (flan-t5 etc.) the prompt is the source sequence
+        and the model produces a target sequence.  For causal models the
+        prompt is prepended to the generated continuation.
 
         Args:
             prompt (str): The input / instruction text.
             max_new_tokens (int): Maximum number of new tokens to generate.
                 Defaults to ``256``.
-            temperature (float): Sampling temperature.  Lower values make
-                output more deterministic; higher values introduce more
-                randomness.  Defaults to ``0.7``.
-                Note: flan-t5 uses greedy / beam-search by default; set
-                ``temperature < 1`` to enable sampling behaviour.
-
-        Returns:
             str: The generated text.  For causal models, the original
             prompt is stripped from the beginning of the output if present.
 
